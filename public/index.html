@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instagram Video Downloader API</title>
+    <meta name="description" content="Modern Instagram Video Downloader API - Download videos, reels, and images from Instagram">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .code-block {
+            background: #1a1a1a;
+            color: #f8f8f2;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+        }
+        .endpoint-card {
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .endpoint-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Navigation -->
+    <nav class="gradient-bg text-white p-4 shadow-lg">
+        <div class="container mx-auto flex justify-between items-center">
+            <div class="flex items-center space-x-2">
+                <i class="fab fa-instagram text-2xl"></i>
+                <h1 class="text-xl font-bold">Instagram Video Downloader API</h1>
+            </div>
+            <div class="flex items-center space-x-4">
+                <span class="bg-green-500 px-3 py-1 rounded-full text-sm">
+                    <i class="fas fa-circle text-xs mr-1"></i>
+                    Live
+                </span>
+                <a href="#docs" class="hover:text-gray-200">Documentation</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="gradient-bg text-white py-20">
+        <div class="container mx-auto text-center px-4">
+            <h2 class="text-4xl font-bold mb-4">Modern Instagram Media Downloader</h2>
+            <p class="text-xl mb-8 opacity-90">Fast, reliable API for downloading Instagram videos, reels, and images</p>
+            
+            <!-- Quick Test -->
+            <div class="max-w-2xl mx-auto bg-white bg-opacity-10 rounded-lg p-6 backdrop-blur">
+                <h3 class="text-lg font-semibold mb-4">🚀 Quick Test</h3>
+                <div class="flex flex-col md:flex-row gap-4">
+                    <input 
+                        type="url" 
+                        id="testUrl" 
+                        placeholder="Enter Instagram URL (e.g., https://www.instagram.com/p/ABC123/)"
+                        class="flex-1 px-4 py-3 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-white"
+                    >
+                    <button 
+                        onclick="testApi()" 
+                        class="bg-white text-purple-600 px-6 py-3 rounded-lg font-semibold hover:bg-gray-100 transition-colors"
+                    >
+                        <i class="fas fa-download mr-2"></i>
+                        Test API
+                    </button>
+                </div>
+                <div id="testResult" class="mt-4 text-left"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section class="py-16 bg-white">
+        <div class="container mx-auto px-4">
+            <h2 class="text-3xl font-bold text-center mb-12 text-gray-800">Features</h2>
+            <div class="grid md:grid-cols-3 gap-8">
+                <div class="text-center">
+                    <div class="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-video text-blue-600 text-2xl"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Multiple Formats</h3>
+                    <p class="text-gray-600">Download videos, images, reels, IGTV, and carousel posts</p>
+                </div>
+                <div class="text-center">
+                    <div class="bg-green-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-bolt text-green-600 text-2xl"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Fast & Reliable</h3>
+                    <p class="text-gray-600">Built-in retry logic and caching for optimal performance</p>
+                </div>
+                <div class="text-center">
+                    <div class="bg-purple-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-layer-group text-purple-600 text-2xl"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Batch Processing</h3>
+                    <p class="text-gray-600">Download multiple URLs in a single request</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- API Endpoints Section -->
+    <section id="docs" class="py-16 bg-gray-50">
+        <div class="container mx-auto px-4">
+            <h2 class="text-3xl font-bold text-center mb-12 text-gray-800">API Endpoints</h2>
+            
+            <!-- Health Check -->
+            <div class="endpoint-card bg-white rounded-lg shadow-md p-6 mb-6">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center">
+                        <span class="bg-green-500 text-white px-3 py-1 rounded text-sm font-mono">GET</span>
+                        <code class="ml-3 text-lg font-mono">/health</code>
+                    </div>
+                    <button onclick="testEndpoint('/health')" class="text-blue-600 hover:text-blue-800">
+                        <i class="fas fa-play mr-1"></i>Test
+                    </button>
+                </div>
+                <p class="text-gray-600 mb-4">Check API health and status</p>
+                <div class="code-block">
+curl https://your-api.vercel.app/health
+                </div>
+            </div>
+
+            <!-- Download Single -->
+            <div class="endpoint-card bg-white rounded-lg shadow-md p-6 mb-6">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center">
+                        <span class="bg-blue-500 text-white px-3 py-1 rounded text-sm font-mono">GET</span>
+                        <code class="ml-3 text-lg font-mono">/api/v1/download</code>
+                    </div>
+                    <button onclick="testEndpoint('/api/v1/download?url=https://www.instagram.com/p/ABC123/')" class="text-blue-600 hover:text-blue-800">
+                        <i class="fas fa-play mr-1"></i>Test
+                    </button>
+                </div>
+                <p class="text-gray-600 mb-4">Download single Instagram media (video/image)</p>
+                <div class="mb-4">
+                    <strong>Parameters:</strong>
+                    <ul class="list-disc list-inside text-gray-600 mt-2">
+                        <li><code>url</code> - Instagram post/reel URL (required)</li>
+                    </ul>
+                </div>
+                <div class="code-block">
+curl "https://your-api.vercel.app/api/v1/download?url=https://www.instagram.com/p/ABC123/"
+                </div>
+            </div>
+
+            <!-- Batch Download -->
+            <div class="endpoint-card bg-white rounded-lg shadow-md p-6 mb-6">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center">
+                        <span class="bg-orange-500 text-white px-3 py-1 rounded text-sm font-mono">POST</span>
+                        <code class="ml-3 text-lg font-mono">/api/v1/download/batch</code>
+                    </div>
+                    <button onclick="showBatchExample()" class="text-blue-600 hover:text-blue-800">
+                        <i class="fas fa-eye mr-1"></i>Example
+                    </button>
+                </div>
+                <p class="text-gray-600 mb-4">Download multiple Instagram URLs (max 10 per request)</p>
+                <div class="code-block">
+curl -X POST "https://your-api.vercel.app/api/v1/download/batch" \
+  -H "Content-Type: application/json" \
+  -d '{"urls":["https://www.instagram.com/p/ABC123/","https://www.instagram.com/reel/XYZ789/"]}'
+                </div>
+            </div>
+
+            <!-- Media Info -->
+            <div class="endpoint-card bg-white rounded-lg shadow-md p-6 mb-6">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center">
+                        <span class="bg-purple-500 text-white px-3 py-1 rounded text-sm font-mono">GET</span>
+                        <code class="ml-3 text-lg font-mono">/api/v1/info</code>
+                    </div>
+                    <button onclick="testEndpoint('/api/v1/info?url=https://www.instagram.com/p/ABC123/')" class="text-blue-600 hover:text-blue-800">
+                        <i class="fas fa-play mr-1"></i>Test
+                    </button>
+                </div>
+                <p class="text-gray-600 mb-4">Get media metadata without download links</p>
+                <div class="code-block">
+curl "https://your-api.vercel.app/api/v1/info?url=https://www.instagram.com/p/ABC123/"
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Response Examples -->
+    <section class="py-16 bg-white">
+        <div class="container mx-auto px-4">
+            <h2 class="text-3xl font-bold text-center mb-12 text-gray-800">Response Examples</h2>
+            
+            <div class="grid md:grid-cols-2 gap-8">
+                <!-- Success Response -->
+                <div>
+                    <h3 class="text-xl font-semibold mb-4 text-green-600">
+                        <i class="fas fa-check-circle mr-2"></i>Success Response
+                    </h3>
+                    <div class="code-block">
+{
+  "success": true,
+  "data": {
+    "type": "video",
+    "postId": "ABC123",
+    "author": "username",
+    "caption": "Video caption here",
+    "likes": 1250,
+    "comments": 89,
+    "videoUrl": "https://scontent.cdninstagram.com/v/video.mp4",
+    "thumbnail": "https://scontent.cdninstagram.com/v/image.jpg",
+    "duration": 30.5,
+    "viewCount": 5600
+  },
+  "timestamp": "2025-09-22T18:45:00.000Z"
+}
+                    </div>
+                </div>
+                
+                <!-- Error Response -->
+                <div>
+                    <h3 class="text-xl font-semibold mb-4 text-red-600">
+                        <i class="fas fa-exclamation-circle mr-2"></i>Error Response
+                    </h3>
+                    <div class="code-block">
+{
+  "error": "Could not extract media information from URL",
+  "code": "EXTRACTION_FAILED",
+  "url": "https://www.instagram.com/p/ABC123/",
+  "timestamp": "2025-09-22T18:45:00.000Z"
+}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Usage Stats -->
+    <section class="py-16 bg-gradient-to-r from-blue-50 to-purple-50">
+        <div class="container mx-auto px-4 text-center">
+            <h2 class="text-3xl font-bold mb-12 text-gray-800">API Status</h2>
+            <div class="grid md:grid-cols-4 gap-8">
+                <div class="bg-white rounded-lg p-6 shadow-md">
+                    <div class="text-3xl font-bold text-green-600" id="uptime">99.9%</div>
+                    <div class="text-gray-600">Uptime</div>
+                </div>
+                <div class="bg-white rounded-lg p-6 shadow-md">
+                    <div class="text-3xl font-bold text-blue-600" id="response-time">&lt; 2s</div>
+                    <div class="text-gray-600">Avg Response</div>
+                </div>
+                <div class="bg-white rounded-lg p-6 shadow-md">
+                    <div class="text-3xl font-bold text-purple-600">Global</div>
+                    <div class="text-gray-600">CDN Coverage</div>
+                </div>
+                <div class="bg-white rounded-lg p-6 shadow-md">
+                    <div class="text-3xl font-bold text-orange-600">Free</div>
+                    <div class="text-gray-600">Usage Tier</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-gray-800 text-white py-8">
+        <div class="container mx-auto px-4">
+            <div class="grid md:grid-cols-3 gap-8">
+                <div>
+                    <h3 class="text-lg font-semibold mb-4">Instagram Video Downloader API</h3>
+                    <p class="text-gray-400">Modern, fast, and reliable API for downloading Instagram media content.</p>
+                </div>
+                <div>
+                    <h3 class="text-lg font-semibold mb-4">Quick Links</h3>
+                    <ul class="space-y-2 text-gray-400">
+                        <li><a href="#docs" class="hover:text-white">Documentation</a></li>
+                        <li><a href="/health" class="hover:text-white">API Health</a></li>
+                        <li><a href="https://github.com/yourusername/instagram-video-downloader-api" class="hover:text-white">GitHub</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h3 class="text-lg font-semibold mb-4">Legal</h3>
+                    <ul class="space-y-2 text-gray-400">
+                        <li>Educational use only</li>
+                        <li>Respect Instagram ToS</li>
+                        <li>No copyright infringement</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="border-t border-gray-700 mt-8 pt-8 text-center text-gray-400">
+                <p>&copy; 2025 Instagram Video Downloader API. Built with ❤️ for developers.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Get current domain for API calls
+        const API_BASE = window.location.origin;
+
+        async function testApi() {
+            const url = document.getElementById('testUrl').value;
+            const resultDiv = document.getElementById('testResult');
+            
+            if (!url) {
+                resultDiv.innerHTML = '<div class="bg-red-100 text-red-800 p-3 rounded">Please enter an Instagram URL</div>';
+                return;
+            }
+
+            resultDiv.innerHTML = '<div class="bg-blue-100 text-blue-800 p-3 rounded"><i class="fas fa-spinner fa-spin mr-2"></i>Testing API...</div>';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/download?url=${encodeURIComponent(url)}`);
+                const data = await response.json();
+
+                if (data.success) {
+                    resultDiv.innerHTML = `
+                        <div class="bg-green-100 text-green-800 p-3 rounded">
+                            <div class="font-semibold mb-2">✅ Success!</div>
+                            <div><strong>Type:</strong> ${data.data.type}</div>
+                            <div><strong>Author:</strong> ${data.data.author}</div>
+                            ${data.data.videoUrl ? `<div><strong>Video URL:</strong> <a href="${data.data.videoUrl}" class="text-blue-600 hover:underline" target="_blank">Download Link</a></div>` : ''}
+                            ${data.data.imageUrl ? `<div><strong>Image URL:</strong> <a href="${data.data.imageUrl}" class="text-blue-600 hover:underline" target="_blank">Download Link</a></div>` : ''}
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `<div class="bg-red-100 text-red-800 p-3 rounded">❌ ${data.error}</div>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="bg-red-100 text-red-800 p-3 rounded">❌ Error: ${error.message}</div>`;
+            }
+        }
+
+        async function testEndpoint(endpoint) {
+            try {
+                const response = await fetch(`${API_BASE}${endpoint}`);
+                const data = await response.json();
+                
+                // Create a modal or alert to show the result
+                const resultWindow = window.open('', '_blank', 'width=600,height=400');
+                resultWindow.document.write(`
+                    <html>
+                        <head><title>API Response</title></head>
+                        <body style="font-family: monospace; padding: 20px; background: #f5f5f5;">
+                            <h3>Response for: ${endpoint}</h3>
+                            <pre style="background: #1a1a1a; color: #f8f8f2; padding: 15px; border-radius: 5px; overflow: auto;">
+${JSON.stringify(data, null, 2)}
+                            </pre>
+                            <button onclick="window.close()" style="margin-top: 10px; padding: 5px 15px;">Close</button>
+                        </body>
+                    </html>
+                `);
+            } catch (error) {
+                alert(`Error testing endpoint: ${error.message}`);
+            }
+        }
+
+        function showBatchExample() {
+            const exampleWindow = window.open('', '_blank', 'width=700,height=500');
+            exampleWindow.document.write(`
+                <html>
+                    <head><title>Batch Download Example</title></head>
+                    <body style="font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5;">
+                        <h2>Batch Download Example</h2>
+                        <h3>Request Body:</h3>
+                        <pre style="background: #1a1a1a; color: #f8f8f2; padding: 15px; border-radius: 5px;">
+{
+  "urls": [
+    "https://www.instagram.com/p/ABC123/",
+    "https://www.instagram.com/reel/XYZ789/",
+    "https://www.instagram.com/p/DEF456/"
+  ]
+}
+                        </pre>
+                        <h3>Example Response:</h3>
+                        <pre style="background: #1a1a1a; color: #f8f8f2; padding: 15px; border-radius: 5px;">
+{
+  "success": true,
+  "total": 3,
+  "successful": 2,
+  "failed": 1,
+  "results": [
+    {
+      "url": "https://www.instagram.com/p/ABC123/",
+      "success": true,
+      "data": { /* media info */ }
+    },
+    {
+      "url": "https://www.instagram.com/reel/XYZ789/",
+      "success": true,
+      "data": { /* media info */ }
+    },
+    {
+      "url": "https://www.instagram.com/p/DEF456/",
+      "success": false,
+      "error": "Media not found"
+    }
+  ],
+  "timestamp": "2025-09-22T18:45:00.000Z"
+}
+                        </pre>
+                        <button onclick="window.close()" style="margin-top: 10px; padding: 5px 15px;">Close</button>
+                    </body>
+                </html>
+            `);
+        }
+
+        // Update API status on page load
+        document.addEventListener('DOMContentLoaded', async function() {
+            try {
+                const start = Date.now();
+                const response = await fetch(`${API_BASE}/health`);
+                const responseTime = Date.now() - start;
+                
+                if (response.ok) {
+                    document.getElementById('response-time').textContent = `${responseTime}ms`;
+                }
+            } catch (error) {
+                console.log('Could not fetch API status');
+            }
+        });
+    </script>
+</body>
+</html>
