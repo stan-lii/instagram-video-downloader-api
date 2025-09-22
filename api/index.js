@@ -41,238 +41,229 @@ const validateInstagramUrl = (url) => {
            /instagram\.com\/[A-Za-z0-9_.]+\/(p|reel)\/[A-Za-z0-9_-]+/.test(url);
 };
 
-// Instagram Scraper Class
-class InstagramScraper {
-    constructor() {
-        this.retryAttempts = 3;
-        this.retryDelay = 2000;
+// Helper functions for cache
+const getFromCache = (key) => {
+    const item = cache.get(key);
+    if (item && Date.now() - item.timestamp < CACHE_TTL) {
+        return item.data;
     }
+    cache.delete(key);
+    return null;
+};
 
-    async getMediaInfo(url, attempt = 1) {
-        try {
-            const postId = extractPostId(url);
-            if (!postId) throw new Error('Invalid Instagram URL format');
+const setCache = (key, data) => {
+    cache.set(key, {
+        data,
+        timestamp: Date.now()
+    });
+};
 
-            // Check cache first
-            const cacheKey = `media_${postId}`;
-            const cachedResult = this.getFromCache(cacheKey);
-            if (cachedResult) return cachedResult;
+// Main scraping functions
+const scrapeDirectly = async (url) => {
+    try {
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': getRandomUserAgent(),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Cache-Control': 'max-age=0'
+            },
+            timeout: 15000
+        });
 
-            // Method 1: Direct scraping
-            let result = await this.scrapeDirectly(url);
-            
-            if (!result && attempt <= this.retryAttempts) {
-                await delay(this.retryDelay * attempt);
-                return this.getMediaInfo(url, attempt + 1);
-            }
-
-            if (result) {
-                this.setCache(cacheKey, result);
-                return result;
-            }
-
-            throw new Error('Failed to extract media information');
-
-        } catch (error) {
-            if (attempt <= this.retryAttempts) {
-                await delay(this.retryDelay * attempt);
-                return this.getMediaInfo(url, attempt + 1);
-            }
-            throw error;
-        }
-    }
-
-    getFromCache(key) {
-        const item = cache.get(key);
-        if (item && Date.now() - item.timestamp < CACHE_TTL) {
-            return item.data;
-        }
-        cache.delete(key);
+        return extractMediaFromHtml(response.data);
+    } catch (error) {
+        console.error('Direct scraping failed:', error.message);
         return null;
     }
+};
 
-    setCache(key, data) {
-        cache.set(key, {
-            data,
-            timestamp: Date.now()
-        });
-    }
+const extractMediaFromHtml = (html) => {
+    try {
+        const $ = cheerio.load(html);
+        
+        // Look for JSON data in script tags
+        const scripts = $('script[type="application/ld+json"]');
+        let mediaData = null;
 
-    async scrapeDirectly(url) {
-        try {
-            const response = await axios.get(url, {
-                headers: {
-                    'User-Agent': getRandomUserAgent(),
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate',
-                    'DNT': '1',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1',
-                    'Sec-Fetch-Dest': 'document',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Cache-Control': 'max-age=0'
-                },
-                timeout: 15000
-            });
-
-            return this.extractMediaFromHtml(response.data);
-        } catch (error) {
-            console.error('Direct scraping failed:', error.message);
-            return null;
-        }
-    }
-
-    extractMediaFromHtml(html) {
-        try {
-            const $ = cheerio.load(html);
-            
-            // Look for JSON data in script tags
-            const scripts = $('script[type="application/ld+json"]');
-            let mediaData = null;
-
-            scripts.each((i, script) => {
-                try {
-                    const jsonData = JSON.parse($(script).html());
-                    if (jsonData.video && jsonData.video.contentUrl) {
-                        mediaData = {
-                            type: 'video',
-                            url: jsonData.video.contentUrl,
-                            thumbnail: jsonData.video.thumbnailUrl,
-                            title: jsonData.headline || jsonData.name || 'Instagram Video',
-                            description: jsonData.description || '',
-                            author: jsonData.author ? jsonData.author.name : 'Unknown',
-                            uploadDate: jsonData.uploadDate || new Date().toISOString()
-                        };
-                        return false; // break the loop
-                    }
-                } catch (e) {
-                    // Continue to next script
-                }
-            });
-
-            // Fallback: Look for shared data in window._sharedData
-            if (!mediaData) {
-                const sharedDataMatch = html.match(/window\._sharedData\s*=\s*({.+?});/);
-                if (sharedDataMatch) {
-                    try {
-                        const sharedData = JSON.parse(sharedDataMatch[1]);
-                        mediaData = this.extractFromSharedData(sharedData);
-                    } catch (e) {
-                        console.error('Error parsing shared data:', e);
-                    }
-                }
-            }
-
-            // Another fallback: Look for additional window data
-            if (!mediaData) {
-                const additionalDataMatch = html.match(/window\.__additionalDataLoaded\(['"].*?['"],\s*({.+?})\);/);
-                if (additionalDataMatch) {
-                    try {
-                        const additionalData = JSON.parse(additionalDataMatch[1]);
-                        mediaData = this.extractFromAdditionalData(additionalData);
-                    } catch (e) {
-                        console.error('Error parsing additional data:', e);
-                    }
-                }
-            }
-
-            return mediaData;
-        } catch (error) {
-            console.error('HTML extraction failed:', error);
-            return null;
-        }
-    }
-
-    extractFromSharedData(sharedData) {
-        try {
-            const entryData = sharedData.entry_data;
-            let mediaInfo = null;
-
-            if (entryData.PostPage && entryData.PostPage[0]) {
-                const media = entryData.PostPage[0].graphql.shortcode_media;
-                mediaInfo = this.processMediaObject(media);
-            }
-
-            return mediaInfo;
-        } catch (error) {
-            console.error('Error extracting from shared data:', error);
-            return null;
-        }
-    }
-
-    extractFromAdditionalData(additionalData) {
-        try {
-            if (additionalData.graphql && additionalData.graphql.shortcode_media) {
-                return this.processMediaObject(additionalData.graphql.shortcode_media);
-            }
-            return null;
-        } catch (error) {
-            console.error('Error extracting from additional data:', error);
-            return null;
-        }
-        }
-    }
-
-    processMediaObject(media) {
-        try {
-            const result = {
-                type: media.is_video ? 'video' : 'image',
-                postId: media.shortcode,
-                author: media.owner.username,
-                caption: media.edge_media_to_caption.edges[0]?.node.text || '',
-                likes: media.edge_media_preview_like.count,
-                comments: media.edge_media_to_comment.count,
-                timestamp: media.taken_at_timestamp,
-                isCarousel: media.__typename === 'GraphSidecar'
-            };
-
-            if (media.is_video) {
-                result.videoUrl = media.video_url;
-                result.thumbnail = media.display_url;
-                result.duration = media.video_duration;
-                result.viewCount = media.video_view_count;
-                
-                result.qualities = [{
-                    quality: 'original',
-                    url: media.video_url,
-                    width: media.dimensions.width,
-                    height: media.dimensions.height
-                }];
-            } else {
-                result.imageUrl = media.display_url;
-                result.images = [{
-                    quality: 'original',
-                    url: media.display_url,
-                    width: media.dimensions.width,
-                    height: media.dimensions.height
-                }];
-            }
-
-            // Handle carousel posts
-            if (media.__typename === 'GraphSidecar' && media.edge_sidecar_to_children) {
-                result.items = media.edge_sidecar_to_children.edges.map(edge => {
-                    const node = edge.node;
-                    return {
-                        type: node.is_video ? 'video' : 'image',
-                        url: node.is_video ? node.video_url : node.display_url,
-                        thumbnail: node.display_url,
-                        dimensions: node.dimensions
+        scripts.each((i, script) => {
+            try {
+                const jsonData = JSON.parse($(script).html());
+                if (jsonData.video && jsonData.video.contentUrl) {
+                    mediaData = {
+                        type: 'video',
+                        url: jsonData.video.contentUrl,
+                        thumbnail: jsonData.video.thumbnailUrl,
+                        title: jsonData.headline || jsonData.name || 'Instagram Video',
+                        description: jsonData.description || '',
+                        author: jsonData.author ? jsonData.author.name : 'Unknown',
+                        uploadDate: jsonData.uploadDate || new Date().toISOString()
                     };
-                });
+                    return false; // break the loop
+                }
+            } catch (e) {
+                // Continue to next script
             }
+        });
 
-            return result;
-        } catch (error) {
-            console.error('Error processing media object:', error);
-            return null;
+        // Fallback: Look for shared data in window._sharedData
+        if (!mediaData) {
+            const sharedDataMatch = html.match(/window\._sharedData\s*=\s*({.+?});/);
+            if (sharedDataMatch) {
+                try {
+                    const sharedData = JSON.parse(sharedDataMatch[1]);
+                    mediaData = extractFromSharedData(sharedData);
+                } catch (e) {
+                    console.error('Error parsing shared data:', e);
+                }
+            }
         }
-    }
-}
 
-// Initialize scraper
-const scraper = new InstagramScraper();
+        // Another fallback: Look for additional window data
+        if (!mediaData) {
+            const additionalDataMatch = html.match(/window\.__additionalDataLoaded\(['"].*?['"],\s*({.+?})\);/);
+            if (additionalDataMatch) {
+                try {
+                    const additionalData = JSON.parse(additionalDataMatch[1]);
+                    mediaData = extractFromAdditionalData(additionalData);
+                } catch (e) {
+                    console.error('Error parsing additional data:', e);
+                }
+            }
+        }
+
+        return mediaData;
+    } catch (error) {
+        console.error('HTML extraction failed:', error);
+        return null;
+    }
+};
+
+const extractFromSharedData = (sharedData) => {
+    try {
+        const entryData = sharedData.entry_data;
+        let mediaInfo = null;
+
+        if (entryData.PostPage && entryData.PostPage[0]) {
+            const media = entryData.PostPage[0].graphql.shortcode_media;
+            mediaInfo = processMediaObject(media);
+        }
+
+        return mediaInfo;
+    } catch (error) {
+        console.error('Error extracting from shared data:', error);
+        return null;
+    }
+};
+
+const extractFromAdditionalData = (additionalData) => {
+    try {
+        if (additionalData.graphql && additionalData.graphql.shortcode_media) {
+            return processMediaObject(additionalData.graphql.shortcode_media);
+        }
+        return null;
+    } catch (error) {
+        console.error('Error extracting from additional data:', error);
+        return null;
+    }
+};
+
+const processMediaObject = (media) => {
+    try {
+        const result = {
+            type: media.is_video ? 'video' : 'image',
+            postId: media.shortcode,
+            author: media.owner.username,
+            caption: media.edge_media_to_caption.edges[0]?.node.text || '',
+            likes: media.edge_media_preview_like.count,
+            comments: media.edge_media_to_comment.count,
+            timestamp: media.taken_at_timestamp,
+            isCarousel: media.__typename === 'GraphSidecar'
+        };
+
+        if (media.is_video) {
+            result.videoUrl = media.video_url;
+            result.thumbnail = media.display_url;
+            result.duration = media.video_duration;
+            result.viewCount = media.video_view_count;
+            
+            result.qualities = [{
+                quality: 'original',
+                url: media.video_url,
+                width: media.dimensions.width,
+                height: media.dimensions.height
+            }];
+        } else {
+            result.imageUrl = media.display_url;
+            result.images = [{
+                quality: 'original',
+                url: media.display_url,
+                width: media.dimensions.width,
+                height: media.dimensions.height
+            }];
+        }
+
+        // Handle carousel posts
+        if (media.__typename === 'GraphSidecar' && media.edge_sidecar_to_children) {
+            result.items = media.edge_sidecar_to_children.edges.map(edge => {
+                const node = edge.node;
+                return {
+                    type: node.is_video ? 'video' : 'image',
+                    url: node.is_video ? node.video_url : node.display_url,
+                    thumbnail: node.display_url,
+                    dimensions: node.dimensions
+                };
+            });
+        }
+
+        return result;
+    } catch (error) {
+        console.error('Error processing media object:', error);
+        return null;
+    }
+};
+
+// Main media extraction function
+const getMediaInfo = async (url, attempt = 1) => {
+    try {
+        const postId = extractPostId(url);
+        if (!postId) throw new Error('Invalid Instagram URL format');
+
+        // Check cache first
+        const cacheKey = `media_${postId}`;
+        const cachedResult = getFromCache(cacheKey);
+        if (cachedResult) return cachedResult;
+
+        // Method 1: Direct scraping
+        let result = await scrapeDirectly(url);
+        
+        if (!result && attempt <= 3) {
+            await delay(2000 * attempt);
+            return getMediaInfo(url, attempt + 1);
+        }
+
+        if (result) {
+            setCache(cacheKey, result);
+            return result;
+        }
+
+        throw new Error('Failed to extract media information');
+
+    } catch (error) {
+        if (attempt <= 3) {
+            await delay(2000 * attempt);
+            return getMediaInfo(url, attempt + 1);
+        }
+        throw error;
+    }
+};
 
 // CORS headers
 const corsHeaders = {
@@ -285,6 +276,9 @@ const corsHeaders = {
 module.exports = async (req, res) => {
     // Handle CORS preflight
     if (req.method === 'OPTIONS') {
+        Object.keys(corsHeaders).forEach(key => {
+            res.setHeader(key, corsHeaders[key]);
+        });
         return res.status(200).json({ success: true });
     }
 
@@ -331,7 +325,7 @@ module.exports = async (req, res) => {
                 });
             }
 
-            const mediaInfo = await scraper.getMediaInfo(url);
+            const mediaInfo = await getMediaInfo(url);
 
             if (!mediaInfo) {
                 return res.status(404).json({
@@ -374,7 +368,7 @@ module.exports = async (req, res) => {
                         throw new Error(`Invalid URL format: ${url}`);
                     }
                     
-                    const mediaInfo = await scraper.getMediaInfo(url);
+                    const mediaInfo = await getMediaInfo(url);
                     return { url, data: mediaInfo };
                 })
             );
@@ -420,7 +414,7 @@ module.exports = async (req, res) => {
                 });
             }
 
-            const mediaInfo = await scraper.getMediaInfo(url);
+            const mediaInfo = await getMediaInfo(url);
             
             if (mediaInfo) {
                 // Remove download URLs for info-only endpoint
