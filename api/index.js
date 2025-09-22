@@ -25,7 +25,8 @@ const extractPostId = (url) => {
         /\/reel\/([A-Za-z0-9_-]+)/,
         /\/tv\/([A-Za-z0-9_-]+)/,
         /instagram\.com\/([A-Za-z0-9_.]+)\/p\/([A-Za-z0-9_-]+)/,
-        /instagram\.com\/([A-Za-z0-9_.]+)\/reel\/([A-Za-z0-9_-]+)/
+        /instagram\.com\/([A-Za-z0-9_.]+)\/reel\/([A-Za-z0-9_-]+)/,
+        /\/reels\/([A-Za-z0-9_-]+)/ // Additional reel pattern
     ];
     
     for (const pattern of patterns) {
@@ -37,11 +38,166 @@ const extractPostId = (url) => {
 
 const validateInstagramUrl = (url) => {
     if (!validator.isURL(url)) return false;
-    return /instagram\.com\/(p|reel|tv)\/[A-Za-z0-9_-]+/.test(url) || 
-           /instagram\.com\/[A-Za-z0-9_.]+\/(p|reel)\/[A-Za-z0-9_-]+/.test(url);
+    return /instagram\.com\/(p|reel|reels|tv)\/[A-Za-z0-9_-]+/.test(url) || 
+           /instagram\.com\/[A-Za-z0-9_.]+\/(p|reel|reels)\/[A-Za-z0-9_-]+/.test(url);
 };
 
-// Helper functions for cache
+const isReelUrl = (url) => {
+    return /instagram\.com\/.*\/(reel|reels)\//.test(url) || url.includes('/reel/');
+};
+
+// Helper functions for enhanced extraction
+const extractReelVideoData = (html) => {
+    try {
+        // Look for reel-specific video patterns
+        const videoPatterns = [
+            /"video_url":\s*"([^"]+\.mp4[^"]*?)"/g,
+            /"clips_metadata":\s*{[^}]*"original_sound_info"[^}]*}/,
+            /"video_versions":\s*\[{[^}]*"url":\s*"([^"]+)"/,
+            /"dash_manifest":\s*"([^"]+)"/,
+            /https:\/\/[^"]*cdninstagram\.com[^"]*\.mp4[^"]*/g
+        ];
+
+        for (const pattern of videoPatterns) {
+            const matches = html.match(pattern);
+            if (matches) {
+                for (const match of matches) {
+                    let videoUrl = null;
+                    
+                    if (match.includes('video_url')) {
+                        const urlMatch = match.match(/"video_url":\s*"([^"]+)"/);
+                        if (urlMatch) videoUrl = urlMatch[1];
+                    } else if (match.includes('cdninstagram.com') && match.includes('.mp4')) {
+                        videoUrl = match.replace(/['"]/g, '');
+                    }
+                    
+                    if (videoUrl && videoUrl.includes('cdninstagram.com') && videoUrl.includes('.mp4')) {
+                        console.log('Found reel video URL:', videoUrl.substring(0, 50) + '...');
+                        return {
+                            type: 'video',
+                            videoUrl: videoUrl,
+                            thumbnail: extractThumbnailFromHtml(html),
+                            caption: extractCaptionFromHtml(html),
+                            author: extractAuthorFromHtml(html),
+                            extractionMethod: 'reel_detection'
+                        };
+                    }
+                }
+            }
+        }
+        
+        return null;
+    } catch (error) {
+        console.error('Error in reel video extraction:', error);
+        return null;
+    }
+};
+
+const extractThumbnailFromHtml = (html) => {
+    try {
+        const $ = cheerio.load(html);
+        
+        // Try multiple sources for thumbnail
+        const thumbnailSources = [
+            $('meta[property="og:image"]').attr('content'),
+            $('meta[name="twitter:image"]').attr('content'),
+            $('meta[property="og:image:url"]').attr('content')
+        ];
+        
+        for (const source of thumbnailSources) {
+            if (source && source.includes('cdninstagram.com')) {
+                return source;
+            }
+        }
+        
+        return thumbnailSources[0] || '';
+    } catch (error) {
+        return '';
+    }
+};
+
+const extractCaptionFromHtml = (html) => {
+    try {
+        const $ = cheerio.load(html);
+        
+        // Try multiple sources for caption
+        let caption = '';
+        
+        // Method 1: Look for JSON data with caption
+        const captionPatterns = [
+            /"caption":\s*{[^}]*"text":\s*"([^"]+)"/,
+            /"edge_media_to_caption":\s*{[^}]*"text":\s*"([^"]+)"/,
+            /"text":\s*"([^"]*#[^"]*)"/ // Look for text with hashtags
+        ];
+        
+        for (const pattern of captionPatterns) {
+            const match = html.match(pattern);
+            if (match && match[1] && match[1].length > 10) {
+                caption = match[1];
+                break;
+            }
+        }
+        
+        // Method 2: Extract from meta description if no JSON caption found
+        if (!caption) {
+            const metaDesc = $('meta[property="og:description"]').attr('content') ||
+                           $('meta[name="description"]').attr('content');
+            
+            if (metaDesc && metaDesc.includes('#')) {
+                // Try to extract just the caption part from meta description
+                const captionMatch = metaDesc.match(/['""]([^'"]*#[^'"]*)['"]/);
+                if (captionMatch) {
+                    caption = captionMatch[1];
+                } else if (metaDesc.includes('#')) {
+                    // Extract everything after the first quote that contains hashtags
+                    const hashtagPart = metaDesc.split('"').find(part => part.includes('#'));
+                    if (hashtagPart) caption = hashtagPart;
+                }
+            }
+        }
+        
+        // Clean up caption
+        if (caption) {
+            caption = caption
+                .replace(/\\n/g, '\n')
+                .replace(/\\"/g, '"')
+                .replace(/\\u[\da-f]{4}/gi, '') // Remove unicode escapes
+                .trim();
+        }
+        
+        return caption || '';
+    } catch (error) {
+        return '';
+    }
+};
+
+const extractAuthorFromHtml = (html) => {
+    try {
+        const $ = cheerio.load(html);
+        
+        // Try multiple sources for author
+        const authorSources = [
+            // From URL path
+            html.match(/instagram\.com\/([^\/]+)\//)?.[1],
+            // From JSON data
+            html.match(/"username":\s*"([^"]+)"/)?.[1],
+            html.match(/"owner":\s*{[^}]*"username":\s*"([^"]+)"/)?.[1],
+            // From meta tags
+            $('meta[property="og:title"]').attr('content')?.split(' on Instagram')[0],
+            $('meta[name="twitter:title"]').attr('content')?.split(' on Instagram')[0]
+        ];
+        
+        for (const source of authorSources) {
+            if (source && source.length > 0 && !source.includes('Instagram') && source !== 'Unknown') {
+                return source;
+            }
+        }
+        
+        return 'Unknown';
+    } catch (error) {
+        return 'Unknown';
+    }
+};
 const getFromCache = (key) => {
     const item = cache.get(key);
     if (item && Date.now() - item.timestamp < CACHE_TTL) {
@@ -115,7 +271,7 @@ const scrapeDirectly = async (url) => {
             throw new Error('Instagram post is age restricted or contains sensitive content');
         }
 
-        const result = extractMediaFromHtml(response.data);
+        const result = extractMediaFromHtml(response.data, url);
         
         if (!result) {
             console.log('Failed to extract media from HTML');
@@ -182,12 +338,50 @@ const extractMediaFromHtml = (html) => {
             }
         }
 
-        // Method 3: Look for additional window data patterns
+        // Method 3: Look for reel-specific data patterns
+        if (!mediaData) {
+            const reelPatterns = [
+                /"clips_metadata":\s*({[^}]+(?:{[^}]*}[^}]*)*})/,
+                /"video_url":\s*"([^"]+)"/,
+                /"video_versions":\s*\[([^\]]+)\]/,
+                /"dash_manifest":\s*"([^"]+)"/
+            ];
+
+            for (const pattern of reelPatterns) {
+                const match = html.match(pattern);
+                if (match) {
+                    try {
+                        console.log('Found reel-specific data');
+                        if (pattern.source.includes('video_url')) {
+                            // Direct video URL found
+                            const videoUrl = match[1];
+                            if (videoUrl && videoUrl.includes('cdninstagram.com')) {
+                                mediaData = {
+                                    type: 'video',
+                                    videoUrl: videoUrl,
+                                    thumbnail: extractThumbnailFromHtml(html),
+                                    title: 'Instagram Reel',
+                                    caption: extractCaptionFromHtml(html),
+                                    author: extractAuthorFromHtml(html)
+                                };
+                                break;
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Error processing reel pattern:', e.message);
+                    }
+                }
+            }
+        }
+
+        // Method 4: Look for additional window data patterns
         if (!mediaData) {
             const patterns = [
                 /window\.__additionalDataLoaded\(['"].*?['"],\s*({.+?})\);/,
                 /window\.__d\(['"]PolarisPostRoot\.react['"],\s*function[^}]+\},\s*({.+?})\);/,
-                /"require":\[\["PolarisPostRoot",.*?({.+?"shortcode_media".+?})/
+                /"require":\[\["PolarisPostRoot",.*?({.+?"shortcode_media".+?})/,
+                /"xdt_shortcode_media":\s*({.+?})/,
+                /"shortcode_media":\s*({.+?"video_url".+?})/
             ];
 
             for (const pattern of patterns) {
@@ -205,7 +399,7 @@ const extractMediaFromHtml = (html) => {
             }
         }
 
-        // Method 4: Search for any JSON containing Instagram media data
+        // Method 5: Search for any JSON containing Instagram media data
         if (!mediaData) {
             const jsonRegex = /"shortcode_media":\s*({[^}]+(?:{[^}]*}[^}]*)*})/g;
             let match;
@@ -214,14 +408,24 @@ const extractMediaFromHtml = (html) => {
                     const mediaObj = JSON.parse(match[1]);
                     console.log('Found shortcode_media in JSON');
                     mediaData = processMediaObject(mediaObj);
-                    if (mediaData) break;
+                    if (mediaData && mediaData.type === 'video') break; // Prefer video results
                 } catch (e) {
                     // Continue searching
                 }
             }
         }
 
-        // Method 5: Look for meta tags
+        // Method 6: Enhanced reel video detection
+        if (!mediaData || mediaData.type === 'image') {
+            console.log('Trying enhanced reel detection...');
+            const reelVideoData = extractReelVideoData(html);
+            if (reelVideoData) {
+                console.log('Found reel video data');
+                mediaData = reelVideoData;
+            }
+        }
+
+        // Method 7: Look for meta tags (fallback, but force video for reel URLs)
         if (!mediaData) {
             const videoUrl = $('meta[property="og:video"]').attr('content') || 
                            $('meta[property="og:video:url"]').attr('content');
@@ -231,14 +435,18 @@ const extractMediaFromHtml = (html) => {
 
             if (videoUrl || imageUrl) {
                 console.log('Found media data in meta tags');
+                
+                // For reel URLs, prefer video type even if only image found
+                const isReelUrl = html.includes('/reel/') || title?.toLowerCase().includes('reel');
+                
                 mediaData = {
-                    type: videoUrl ? 'video' : 'image',
+                    type: (videoUrl || isReelUrl) ? 'video' : 'image',
                     videoUrl: videoUrl,
                     imageUrl: imageUrl,
                     thumbnail: imageUrl,
                     title: title || 'Instagram Post',
                     caption: description || '',
-                    author: 'Unknown'
+                    author: extractAuthorFromHtml(html) || 'Unknown'
                 };
             }
         }
@@ -247,8 +455,10 @@ const extractMediaFromHtml = (html) => {
         if (mediaData) {
             console.log('Successfully extracted media data:', {
                 type: mediaData.type,
-                hasUrl: !!(mediaData.videoUrl || mediaData.imageUrl),
-                hasCaption: !!mediaData.caption
+                hasVideoUrl: !!mediaData.videoUrl,
+                hasImageUrl: !!mediaData.imageUrl,
+                hasCaption: !!mediaData.caption,
+                method: mediaData.extractionMethod || 'unknown'
             });
         } else {
             console.log('No media data found in HTML');
@@ -265,14 +475,14 @@ const extractMediaFromHtml = (html) => {
     }
 };
 
-const extractFromSharedData = (sharedData) => {
+const extractFromSharedData = (sharedData, sourceUrl = '') => {
     try {
         const entryData = sharedData.entry_data;
         let mediaInfo = null;
 
         if (entryData.PostPage && entryData.PostPage[0]) {
             const media = entryData.PostPage[0].graphql.shortcode_media;
-            mediaInfo = processMediaObject(media);
+            mediaInfo = processMediaObject(media, sourceUrl);
         }
 
         return mediaInfo;
@@ -282,7 +492,7 @@ const extractFromSharedData = (sharedData) => {
     }
 };
 
-const extractFromAdditionalData = (additionalData) => {
+const extractFromAdditionalData = (additionalData, sourceUrl = '') => {
     try {
         // Multiple ways to find the media data
         let media = null;
@@ -317,7 +527,7 @@ const extractFromAdditionalData = (additionalData) => {
         
         if (media) {
             console.log('Found media object in additional data');
-            return processMediaObject(media);
+            return processMediaObject(media, sourceUrl);
         }
         
         return null;
@@ -327,32 +537,40 @@ const extractFromAdditionalData = (additionalData) => {
     }
 };
 
-const processMediaObject = (media) => {
+const processMediaObject = (media, sourceUrl = '') => {
     try {
         console.log('Processing media object:', {
             has_shortcode: !!media.shortcode,
             has_owner: !!media.owner,
             is_video: media.is_video,
-            typename: media.__typename
+            typename: media.__typename,
+            has_video_url: !!media.video_url
         });
 
+        // Check if this is a reel based on URL or content
+        const isReel = isReelUrl(sourceUrl) || media.__typename === 'GraphVideo' || 
+                      media.product_type === 'clips' || sourceUrl.includes('/reel/');
+
         const result = {
-            type: media.is_video ? 'video' : 'image',
+            type: media.is_video || isReel ? 'video' : 'image',
             postId: media.shortcode || media.id || 'unknown',
             author: media.owner?.username || 'unknown',
             caption: '',
             likes: 0,
             comments: 0,
             timestamp: media.taken_at_timestamp || Date.now(),
-            isCarousel: media.__typename === 'GraphSidecar'
+            isCarousel: media.__typename === 'GraphSidecar',
+            isReel: isReel
         };
 
-        // Extract caption safely
+        // Extract caption safely with multiple methods
         try {
             if (media.edge_media_to_caption?.edges?.[0]?.node?.text) {
                 result.caption = media.edge_media_to_caption.edges[0].node.text;
+            } else if (media.caption?.text) {
+                result.caption = media.caption.text;
             } else if (media.caption) {
-                result.caption = media.caption;
+                result.caption = typeof media.caption === 'string' ? media.caption : '';
             }
         } catch (e) {
             console.log('Could not extract caption:', e.message);
@@ -366,11 +584,13 @@ const processMediaObject = (media) => {
             console.log('Could not extract engagement:', e.message);
         }
 
-        if (media.is_video) {
+        // Handle video content (including reels)
+        if (media.is_video || isReel || media.video_url) {
+            result.type = 'video'; // Force video type for reels
             result.videoUrl = media.video_url;
             result.thumbnail = media.display_url || media.thumbnail_url;
             result.duration = media.video_duration || 0;
-            result.viewCount = media.video_view_count || 0;
+            result.viewCount = media.video_view_count || media.play_count || 0;
             
             // Add quality options
             result.qualities = [];
@@ -380,6 +600,20 @@ const processMediaObject = (media) => {
                     url: media.video_url,
                     width: media.dimensions?.width || 0,
                     height: media.dimensions?.height || 0
+                });
+            }
+            
+            // Try to find additional video qualities
+            if (media.video_versions) {
+                media.video_versions.forEach(version => {
+                    if (version.url) {
+                        result.qualities.push({
+                            quality: `${version.width}x${version.height}`,
+                            url: version.url,
+                            width: version.width || 0,
+                            height: version.height || 0
+                        });
+                    }
                 });
             }
         } else {
@@ -410,9 +644,11 @@ const processMediaObject = (media) => {
 
         console.log('Successfully processed media object:', {
             type: result.type,
-            hasUrl: !!(result.videoUrl || result.imageUrl),
+            hasVideoUrl: !!result.videoUrl,
+            hasImageUrl: !!result.imageUrl,
             hasCaption: !!result.caption,
-            captionLength: result.caption.length
+            captionLength: result.caption.length,
+            isReel: result.isReel
         });
 
         return result;
@@ -420,15 +656,19 @@ const processMediaObject = (media) => {
         console.error('Error processing media object:', error);
         
         // Return minimal object if we have at least some data
-        if (media.video_url || media.display_url) {
+        // For reel URLs, force video type even if detection failed
+        const isReel = isReelUrl(sourceUrl) || sourceUrl.includes('/reel/');
+        
+        if (media.video_url || media.display_url || isReel) {
             return {
-                type: media.is_video ? 'video' : 'image',
+                type: (media.video_url || isReel) ? 'video' : 'image',
                 postId: media.shortcode || 'unknown',
-                author: 'unknown',
+                author: media.owner?.username || 'unknown',
                 caption: '',
                 videoUrl: media.video_url,
                 imageUrl: media.display_url,
-                thumbnail: media.display_url
+                thumbnail: media.display_url,
+                isReel: isReel
             };
         }
         
