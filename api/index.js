@@ -61,6 +61,8 @@ const setCache = (key, data) => {
 // Main scraping functions
 const scrapeDirectly = async (url) => {
     try {
+        console.log('Making request to Instagram...');
+        
         const response = await axios.get(url, {
             headers: {
                 'User-Agent': getRandomUserAgent(),
@@ -75,12 +77,63 @@ const scrapeDirectly = async (url) => {
                 'Sec-Fetch-Site': 'none',
                 'Cache-Control': 'max-age=0'
             },
-            timeout: 15000
+            timeout: 15000,
+            maxRedirects: 5,
+            validateStatus: function (status) {
+                return status < 500; // Accept anything less than 500 as success for now
+            }
         });
 
-        return extractMediaFromHtml(response.data);
+        console.log('Instagram response:', {
+            status: response.status,
+            contentType: response.headers['content-type'],
+            contentLength: response.data.length
+        });
+
+        // Check for common Instagram error responses
+        if (response.status === 404) {
+            throw new Error('Instagram post not found (404) - post may be deleted or private');
+        }
+        
+        if (response.status === 429) {
+            throw new Error('Instagram rate limiting detected (429) - too many requests');
+        }
+        
+        if (response.status >= 400) {
+            throw new Error(`Instagram returned error status: ${response.status}`);
+        }
+
+        // Check if we got redirected to login page
+        if (response.data.includes('login_and_signup_page') || 
+            response.data.includes('"require_login"') ||
+            response.data.includes('login/?next=')) {
+            throw new Error('Instagram requires login - post may be private or region restricted');
+        }
+
+        // Check for age restriction
+        if (response.data.includes('age_restricted') || response.data.includes('sensitive_content')) {
+            throw new Error('Instagram post is age restricted or contains sensitive content');
+        }
+
+        const result = extractMediaFromHtml(response.data);
+        
+        if (!result) {
+            console.log('Failed to extract media from HTML');
+            // Log a sample of the HTML for debugging
+            const htmlSample = response.data.substring(0, 1000);
+            console.log('HTML sample:', htmlSample);
+        }
+        
+        return result;
+
     } catch (error) {
-        console.error('Direct scraping failed:', error.message);
+        if (error.code === 'ECONNABORTED') {
+            console.error('Request timeout - Instagram may be slow or blocking');
+        } else if (error.code === 'ENOTFOUND') {
+            console.error('DNS resolution failed - network issue');
+        } else {
+            console.error('Direct scraping failed:', error.message);
+        }
         return null;
     }
 };
@@ -88,8 +141,9 @@ const scrapeDirectly = async (url) => {
 const extractMediaFromHtml = (html) => {
     try {
         const $ = cheerio.load(html);
+        console.log('HTML content length:', html.length);
         
-        // Look for JSON data in script tags
+        // Method 1: Look for JSON-LD data in script tags
         const scripts = $('script[type="application/ld+json"]');
         let mediaData = null;
 
@@ -99,13 +153,14 @@ const extractMediaFromHtml = (html) => {
                 if (jsonData.video && jsonData.video.contentUrl) {
                     mediaData = {
                         type: 'video',
-                        url: jsonData.video.contentUrl,
+                        videoUrl: jsonData.video.contentUrl,
                         thumbnail: jsonData.video.thumbnailUrl,
                         title: jsonData.headline || jsonData.name || 'Instagram Video',
-                        description: jsonData.description || '',
+                        caption: jsonData.description || '',
                         author: jsonData.author ? jsonData.author.name : 'Unknown',
                         uploadDate: jsonData.uploadDate || new Date().toISOString()
                     };
+                    console.log('Found video data in JSON-LD');
                     return false; // break the loop
                 }
             } catch (e) {
@@ -113,30 +168,94 @@ const extractMediaFromHtml = (html) => {
             }
         });
 
-        // Fallback: Look for shared data in window._sharedData
+        // Method 2: Look for shared data in window._sharedData
         if (!mediaData) {
             const sharedDataMatch = html.match(/window\._sharedData\s*=\s*({.+?});/);
             if (sharedDataMatch) {
                 try {
                     const sharedData = JSON.parse(sharedDataMatch[1]);
+                    console.log('Found window._sharedData');
                     mediaData = extractFromSharedData(sharedData);
                 } catch (e) {
-                    console.error('Error parsing shared data:', e);
+                    console.error('Error parsing shared data:', e.message);
                 }
             }
         }
 
-        // Another fallback: Look for additional window data
+        // Method 3: Look for additional window data patterns
         if (!mediaData) {
-            const additionalDataMatch = html.match(/window\.__additionalDataLoaded\(['"].*?['"],\s*({.+?})\);/);
-            if (additionalDataMatch) {
-                try {
-                    const additionalData = JSON.parse(additionalDataMatch[1]);
-                    mediaData = extractFromAdditionalData(additionalData);
-                } catch (e) {
-                    console.error('Error parsing additional data:', e);
+            const patterns = [
+                /window\.__additionalDataLoaded\(['"].*?['"],\s*({.+?})\);/,
+                /window\.__d\(['"]PolarisPostRoot\.react['"],\s*function[^}]+\},\s*({.+?})\);/,
+                /"require":\[\["PolarisPostRoot",.*?({.+?"shortcode_media".+?})/
+            ];
+
+            for (const pattern of patterns) {
+                const match = html.match(pattern);
+                if (match) {
+                    try {
+                        const data = JSON.parse(match[1]);
+                        console.log('Found data in pattern match');
+                        mediaData = extractFromAdditionalData(data);
+                        if (mediaData) break;
+                    } catch (e) {
+                        console.error('Error parsing pattern data:', e.message);
+                    }
                 }
             }
+        }
+
+        // Method 4: Search for any JSON containing Instagram media data
+        if (!mediaData) {
+            const jsonRegex = /"shortcode_media":\s*({[^}]+(?:{[^}]*}[^}]*)*})/g;
+            let match;
+            while ((match = jsonRegex.exec(html)) !== null) {
+                try {
+                    const mediaObj = JSON.parse(match[1]);
+                    console.log('Found shortcode_media in JSON');
+                    mediaData = processMediaObject(mediaObj);
+                    if (mediaData) break;
+                } catch (e) {
+                    // Continue searching
+                }
+            }
+        }
+
+        // Method 5: Look for meta tags
+        if (!mediaData) {
+            const videoUrl = $('meta[property="og:video"]').attr('content') || 
+                           $('meta[property="og:video:url"]').attr('content');
+            const imageUrl = $('meta[property="og:image"]').attr('content');
+            const title = $('meta[property="og:title"]').attr('content');
+            const description = $('meta[property="og:description"]').attr('content');
+
+            if (videoUrl || imageUrl) {
+                console.log('Found media data in meta tags');
+                mediaData = {
+                    type: videoUrl ? 'video' : 'image',
+                    videoUrl: videoUrl,
+                    imageUrl: imageUrl,
+                    thumbnail: imageUrl,
+                    title: title || 'Instagram Post',
+                    caption: description || '',
+                    author: 'Unknown'
+                };
+            }
+        }
+
+        // Log what we found
+        if (mediaData) {
+            console.log('Successfully extracted media data:', {
+                type: mediaData.type,
+                hasUrl: !!(mediaData.videoUrl || mediaData.imageUrl),
+                hasCaption: !!mediaData.caption
+            });
+        } else {
+            console.log('No media data found in HTML');
+            // Log some debugging info
+            console.log('Page title:', $('title').text());
+            console.log('Meta description:', $('meta[name="description"]').attr('content'));
+            console.log('Has script tags:', $('script').length);
         }
 
         return mediaData;
@@ -165,9 +284,42 @@ const extractFromSharedData = (sharedData) => {
 
 const extractFromAdditionalData = (additionalData) => {
     try {
+        // Multiple ways to find the media data
+        let media = null;
+        
+        // Method 1: Direct path
         if (additionalData.graphql && additionalData.graphql.shortcode_media) {
-            return processMediaObject(additionalData.graphql.shortcode_media);
+            media = additionalData.graphql.shortcode_media;
         }
+        // Method 2: Look for any shortcode_media in the object
+        else if (additionalData.shortcode_media) {
+            media = additionalData.shortcode_media;
+        }
+        // Method 3: Deep search for shortcode_media
+        else {
+            const searchForMedia = (obj) => {
+                if (typeof obj !== 'object' || obj === null) return null;
+                
+                if (obj.shortcode_media) return obj.shortcode_media;
+                
+                for (const key in obj) {
+                    if (key === 'shortcode_media') return obj[key];
+                    if (typeof obj[key] === 'object') {
+                        const result = searchForMedia(obj[key]);
+                        if (result) return result;
+                    }
+                }
+                return null;
+            };
+            
+            media = searchForMedia(additionalData);
+        }
+        
+        if (media) {
+            console.log('Found media object in additional data');
+            return processMediaObject(media);
+        }
+        
         return null;
     } catch (error) {
         console.error('Error extracting from additional data:', error);
@@ -177,55 +329,109 @@ const extractFromAdditionalData = (additionalData) => {
 
 const processMediaObject = (media) => {
     try {
+        console.log('Processing media object:', {
+            has_shortcode: !!media.shortcode,
+            has_owner: !!media.owner,
+            is_video: media.is_video,
+            typename: media.__typename
+        });
+
         const result = {
             type: media.is_video ? 'video' : 'image',
-            postId: media.shortcode,
-            author: media.owner.username,
-            caption: media.edge_media_to_caption.edges[0]?.node.text || '',
-            likes: media.edge_media_preview_like.count,
-            comments: media.edge_media_to_comment.count,
-            timestamp: media.taken_at_timestamp,
+            postId: media.shortcode || media.id || 'unknown',
+            author: media.owner?.username || 'unknown',
+            caption: '',
+            likes: 0,
+            comments: 0,
+            timestamp: media.taken_at_timestamp || Date.now(),
             isCarousel: media.__typename === 'GraphSidecar'
         };
 
-        if (media.is_video) {
-            result.videoUrl = media.video_url;
-            result.thumbnail = media.display_url;
-            result.duration = media.video_duration;
-            result.viewCount = media.video_view_count;
-            
-            result.qualities = [{
-                quality: 'original',
-                url: media.video_url,
-                width: media.dimensions.width,
-                height: media.dimensions.height
-            }];
-        } else {
-            result.imageUrl = media.display_url;
-            result.images = [{
-                quality: 'original',
-                url: media.display_url,
-                width: media.dimensions.width,
-                height: media.dimensions.height
-            }];
+        // Extract caption safely
+        try {
+            if (media.edge_media_to_caption?.edges?.[0]?.node?.text) {
+                result.caption = media.edge_media_to_caption.edges[0].node.text;
+            } else if (media.caption) {
+                result.caption = media.caption;
+            }
+        } catch (e) {
+            console.log('Could not extract caption:', e.message);
         }
 
-        // Handle carousel posts
-        if (media.__typename === 'GraphSidecar' && media.edge_sidecar_to_children) {
+        // Extract engagement safely
+        try {
+            result.likes = media.edge_media_preview_like?.count || media.like_count || 0;
+            result.comments = media.edge_media_to_comment?.count || media.comment_count || 0;
+        } catch (e) {
+            console.log('Could not extract engagement:', e.message);
+        }
+
+        if (media.is_video) {
+            result.videoUrl = media.video_url;
+            result.thumbnail = media.display_url || media.thumbnail_url;
+            result.duration = media.video_duration || 0;
+            result.viewCount = media.video_view_count || 0;
+            
+            // Add quality options
+            result.qualities = [];
+            if (media.video_url) {
+                result.qualities.push({
+                    quality: 'original',
+                    url: media.video_url,
+                    width: media.dimensions?.width || 0,
+                    height: media.dimensions?.height || 0
+                });
+            }
+        } else {
+            result.imageUrl = media.display_url || media.thumbnail_url;
+            result.images = [];
+            if (media.display_url) {
+                result.images.push({
+                    quality: 'original',
+                    url: media.display_url,
+                    width: media.dimensions?.width || 0,
+                    height: media.dimensions?.height || 0
+                });
+            }
+        }
+
+        // Handle carousel posts safely
+        if (media.__typename === 'GraphSidecar' && media.edge_sidecar_to_children?.edges) {
             result.items = media.edge_sidecar_to_children.edges.map(edge => {
                 const node = edge.node;
                 return {
                     type: node.is_video ? 'video' : 'image',
                     url: node.is_video ? node.video_url : node.display_url,
                     thumbnail: node.display_url,
-                    dimensions: node.dimensions
+                    dimensions: node.dimensions || { width: 0, height: 0 }
                 };
             });
         }
 
+        console.log('Successfully processed media object:', {
+            type: result.type,
+            hasUrl: !!(result.videoUrl || result.imageUrl),
+            hasCaption: !!result.caption,
+            captionLength: result.caption.length
+        });
+
         return result;
     } catch (error) {
         console.error('Error processing media object:', error);
+        
+        // Return minimal object if we have at least some data
+        if (media.video_url || media.display_url) {
+            return {
+                type: media.is_video ? 'video' : 'image',
+                postId: media.shortcode || 'unknown',
+                author: 'unknown',
+                caption: '',
+                videoUrl: media.video_url,
+                imageUrl: media.display_url,
+                thumbnail: media.display_url
+            };
+        }
+        
         return null;
     }
 };
@@ -233,35 +439,55 @@ const processMediaObject = (media) => {
 // Main media extraction function
 const getMediaInfo = async (url, attempt = 1) => {
     try {
+        console.log(`Attempt ${attempt} for URL:`, url);
+        
         const postId = extractPostId(url);
-        if (!postId) throw new Error('Invalid Instagram URL format');
+        if (!postId) {
+            throw new Error('Invalid Instagram URL format - could not extract post ID');
+        }
+        
+        console.log('Extracted post ID:', postId);
 
         // Check cache first
         const cacheKey = `media_${postId}`;
         const cachedResult = getFromCache(cacheKey);
-        if (cachedResult) return cachedResult;
+        if (cachedResult) {
+            console.log('Returning cached result');
+            return cachedResult;
+        }
 
-        // Method 1: Direct scraping
+        // Try direct scraping
+        console.log('Attempting direct scraping...');
         let result = await scrapeDirectly(url);
         
         if (!result && attempt <= 3) {
+            console.log(`Attempt ${attempt} failed, retrying...`);
             await delay(2000 * attempt);
             return getMediaInfo(url, attempt + 1);
         }
 
         if (result) {
+            console.log('Successfully extracted media info');
             setCache(cacheKey, result);
             return result;
         }
 
-        throw new Error('Failed to extract media information');
+        // If we get here, all extraction methods failed
+        const errorMsg = `Failed to extract media information after ${attempt} attempts. Instagram may have changed their structure or the post may be private/deleted.`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
 
     } catch (error) {
+        console.error(`getMediaInfo error (attempt ${attempt}):`, error.message);
+        
         if (attempt <= 3) {
+            console.log(`Retrying attempt ${attempt + 1}...`);
             await delay(2000 * attempt);
             return getMediaInfo(url, attempt + 1);
         }
-        throw error;
+        
+        // After all retries failed, throw with more context
+        throw new Error(`Failed to extract media information: ${error.message}. This could be due to: 1) Private/deleted post, 2) Instagram blocking the request, 3) Changed Instagram structure, 4) Invalid URL format.`);
     }
 };
 
@@ -297,8 +523,59 @@ module.exports = async (req, res) => {
                 status: 'healthy',
                 timestamp: new Date().toISOString(),
                 version: '1.0.0',
-                platform: 'Vercel Serverless'
+                platform: 'Vercel Serverless',
+                features: ['video_download', 'image_download', 'batch_processing', 'reel_captions']
             });
+        }
+
+        // Debug endpoint for testing specific URLs
+        if ((urlPath.startsWith('/v1/debug') || requestUrl.includes('/debug')) && method === 'GET') {
+            const { url } = req.query;
+
+            if (!url) {
+                return res.status(400).json({
+                    error: 'URL parameter is required for debug endpoint',
+                    code: 'MISSING_URL'
+                });
+            }
+
+            try {
+                console.log('=== DEBUG MODE FOR URL ===', url);
+                const postId = extractPostId(url);
+                
+                const debugInfo = {
+                    url: url,
+                    postId: postId,
+                    isValidUrl: validateInstagramUrl(url),
+                    timestamp: new Date().toISOString()
+                };
+
+                // Try to get basic page info
+                try {
+                    const response = await axios.get(url, {
+                        headers: { 'User-Agent': getRandomUserAgent() },
+                        timeout: 10000
+                    });
+                    
+                    debugInfo.httpStatus = response.status;
+                    debugInfo.contentLength = response.data.length;
+                    debugInfo.hasLoginRedirect = response.data.includes('login_and_signup_page');
+                    debugInfo.hasAgeRestriction = response.data.includes('age_restricted');
+                } catch (e) {
+                    debugInfo.requestError = e.message;
+                }
+
+                return res.status(200).json({
+                    success: true,
+                    debug: debugInfo
+                });
+            } catch (error) {
+                return res.status(500).json({
+                    success: false,
+                    error: 'Debug failed',
+                    message: error.message
+                });
+            }
         }
 
         // Download endpoint
@@ -325,21 +602,40 @@ module.exports = async (req, res) => {
                 });
             }
 
-            const mediaInfo = await getMediaInfo(url);
+            try {
+                const mediaInfo = await getMediaInfo(url);
 
-            if (!mediaInfo) {
-                return res.status(404).json({
-                    error: 'Could not extract media information from URL',
-                    code: 'EXTRACTION_FAILED',
-                    url: url
+                if (!mediaInfo) {
+                    return res.status(404).json({
+                        error: 'Could not extract media information from URL',
+                        code: 'EXTRACTION_FAILED',
+                        url: url,
+                        possibleReasons: [
+                            'Post may be private or deleted',
+                            'Instagram may be blocking requests',
+                            'Post may be age-restricted',
+                            'Instagram structure may have changed'
+                        ],
+                        suggestion: 'Try the debug endpoint: /api/v1/debug?url=YOUR_URL'
+                    });
+                }
+
+                return res.status(200).json({
+                    success: true,
+                    data: mediaInfo,
+                    timestamp: new Date().toISOString()
+                });
+            } catch (error) {
+                console.error('Download endpoint error:', error);
+                
+                return res.status(500).json({
+                    error: 'Failed to process Instagram URL',
+                    code: 'PROCESSING_ERROR',
+                    message: error.message,
+                    url: url,
+                    timestamp: new Date().toISOString()
                 });
             }
-
-            return res.status(200).json({
-                success: true,
-                data: mediaInfo,
-                timestamp: new Date().toISOString()
-            });
         }
 
         // Batch download endpoint
@@ -453,7 +749,8 @@ module.exports = async (req, res) => {
                 'GET /health - Check API health',
                 'GET /api/v1/download?url=<instagram_url> - Download media',
                 'POST /api/v1/download/batch - Batch download',
-                'GET /api/v1/info?url=<instagram_url> - Get media info'
+                'GET /api/v1/info?url=<instagram_url> - Get media info',
+                'GET /api/v1/debug?url=<instagram_url> - Debug URL extraction'
             ],
             requestedPath: requestUrl,
             timestamp: new Date().toISOString()
