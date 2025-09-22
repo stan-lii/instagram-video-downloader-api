@@ -47,41 +47,72 @@ const isReelUrl = (url) => {
 };
 
 // Helper functions for enhanced extraction
-const extractReelVideoData = (html) => {
+const extractReelVideoData = (html, sourceUrl = '') => {
     try {
         // Look for reel-specific video patterns
         const videoPatterns = [
+            // Pattern 1: Direct video_url
             /"video_url":\s*"([^"]+\.mp4[^"]*?)"/g,
-            /"clips_metadata":\s*{[^}]*"original_sound_info"[^}]*}/,
-            /"video_versions":\s*\[{[^}]*"url":\s*"([^"]+)"/,
-            /"dash_manifest":\s*"([^"]+)"/,
-            /https:\/\/[^"]*cdninstagram\.com[^"]*\.mp4[^"]*/g
+            // Pattern 2: video_versions array
+            /"video_versions":\s*\[([^\]]+)\]/g,
+            // Pattern 3: Direct MP4 URLs
+            /https:\/\/[^"]*scontent[^"]*\.cdninstagram\.com[^"]*\.mp4[^"]*/g,
+            // Pattern 4: clips_metadata
+            /"clips_metadata":\s*{[^}]*"original_sound_info"[^}]*}/
         ];
 
         for (const pattern of videoPatterns) {
-            const matches = html.match(pattern);
-            if (matches) {
-                for (const match of matches) {
-                    let videoUrl = null;
-                    
-                    if (match.includes('video_url')) {
-                        const urlMatch = match.match(/"video_url":\s*"([^"]+)"/);
-                        if (urlMatch) videoUrl = urlMatch[1];
-                    } else if (match.includes('cdninstagram.com') && match.includes('.mp4')) {
-                        videoUrl = match.replace(/['"]/g, '');
+            const matches = [...html.matchAll(pattern)];
+            
+            for (const match of matches) {
+                let videoUrl = null;
+                
+                if (match[0].includes('video_url')) {
+                    // Extract from video_url field
+                    const urlMatch = match[0].match(/"video_url":\s*"([^"]+)"/);
+                    if (urlMatch) {
+                        videoUrl = urlMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '');
                     }
-                    
-                    if (videoUrl && videoUrl.includes('cdninstagram.com') && videoUrl.includes('.mp4')) {
-                        console.log('Found reel video URL:', videoUrl.substring(0, 50) + '...');
-                        return {
-                            type: 'video',
-                            videoUrl: videoUrl,
-                            thumbnail: extractThumbnailFromHtml(html),
-                            caption: extractCaptionFromHtml(html),
-                            author: extractAuthorFromHtml(html),
-                            extractionMethod: 'reel_detection'
-                        };
+                } else if (match[0].includes('video_versions')) {
+                    // Extract from video_versions array
+                    try {
+                        const versionsMatch = match[1];
+                        // Look for the first valid URL in video_versions
+                        const urlMatches = [...versionsMatch.matchAll(/"url":\s*"([^"]+)"/g)];
+                        if (urlMatches.length > 0) {
+                            videoUrl = urlMatches[0][1].replace(/\\u0026/g, '&').replace(/\\/g, '');
+                        }
+                    } catch (e) {
+                        console.log('Error parsing video_versions:', e.message);
                     }
+                } else if (match[0].includes('scontent') && match[0].includes('.mp4')) {
+                    // Direct MP4 URL found
+                    videoUrl = match[0].replace(/['"]/g, '').replace(/\\u0026/g, '&').replace(/\\/g, '');
+                }
+                
+                // Validate and clean the video URL
+                if (videoUrl && 
+                    videoUrl.includes('scontent') && 
+                    videoUrl.includes('.cdninstagram.com') && 
+                    videoUrl.includes('.mp4') &&
+                    !videoUrl.includes('video_versions')) {
+                    
+                    // Clean up the URL
+                    videoUrl = videoUrl
+                        .replace(/\\u0026/g, '&')
+                        .replace(/\\/g, '')
+                        .replace(/^["']|["']$/g, '');
+                    
+                    console.log('Found valid reel video URL');
+                    
+                    return {
+                        type: 'video',
+                        videoUrl: videoUrl,
+                        thumbnail: extractThumbnailFromHtml(html),
+                        caption: extractCaptionFromHtml(html),
+                        author: extractAuthorFromHtml(html, sourceUrl),
+                        extractionMethod: 'reel_detection'
+                    };
                 }
             }
         }
@@ -171,30 +202,114 @@ const extractCaptionFromHtml = (html) => {
     }
 };
 
-const extractAuthorFromHtml = (html) => {
+const extractAuthorFromHtml = (html, sourceUrl = '') => {
     try {
         const $ = cheerio.load(html);
         
-        // Try multiple sources for author
-        const authorSources = [
-            // From URL path
-            html.match(/instagram\.com\/([^\/]+)\//)?.[1],
-            // From JSON data
-            html.match(/"username":\s*"([^"]+)"/)?.[1],
-            html.match(/"owner":\s*{[^}]*"username":\s*"([^"]+)"/)?.[1],
-            // From meta tags
-            $('meta[property="og:title"]').attr('content')?.split(' on Instagram')[0],
-            $('meta[name="twitter:title"]').attr('content')?.split(' on Instagram')[0]
-        ];
+        // Try multiple sources for author in order of reliability
+        let author = '';
         
-        for (const source of authorSources) {
-            if (source && source.length > 0 && !source.includes('Instagram') && source !== 'Unknown') {
-                return source;
+        // Method 1: Extract from source URL path (most reliable)
+        if (sourceUrl) {
+            const urlMatch = sourceUrl.match(/instagram\.com\/([^\/\s"'?]+)\//);
+            if (urlMatch && urlMatch[1] && 
+                !urlMatch[1].includes('p') && 
+                !urlMatch[1].includes('reel') && 
+                !urlMatch[1].includes('stories') &&
+                urlMatch[1] !== 'www' &&
+                urlMatch[1] !== 'rsrc.php' &&
+                urlMatch[1].length > 1) {
+                author = urlMatch[1];
+                console.log('Author from source URL:', author);
             }
         }
         
-        return 'Unknown';
+        // Method 2: Extract from HTML URL references
+        if (!author) {
+            const urlMatch = html.match(/instagram\.com\/([^\/\s"'?]+)\//);
+            if (urlMatch && urlMatch[1] && 
+                !urlMatch[1].includes('p') && 
+                !urlMatch[1].includes('reel') && 
+                !urlMatch[1].includes('stories') &&
+                urlMatch[1] !== 'www' &&
+                urlMatch[1] !== 'rsrc.php' &&
+                urlMatch[1].length > 1) {
+                author = urlMatch[1];
+                console.log('Author from HTML URL:', author);
+            }
+        }
+        
+        // Method 3: Look for username in JSON data
+        if (!author) {
+            const usernamePatterns = [
+                /"username":\s*"([^"]+)"/,
+                /"owner":\s*{[^}]*"username":\s*"([^"]+)"/,
+                /"user":\s*{[^}]*"username":\s*"([^"]+)"/,
+                /"account_username":\s*"([^"]+)"/
+            ];
+            
+            for (const pattern of usernamePatterns) {
+                const match = html.match(pattern);
+                if (match && match[1] && 
+                    !match[1].includes('rsrc') && 
+                    !match[1].includes('.php') &&
+                    match[1].length > 1) {
+                    author = match[1];
+                    console.log('Author from JSON:', author);
+                    break;
+                }
+            }
+        }
+        
+        // Method 4: Extract from page title (clean it up)
+        if (!author) {
+            const title = $('meta[property="og:title"]').attr('content');
+            if (title) {
+                // Try to extract username from title like "Username (@username) • Instagram photos and videos"
+                const titlePatterns = [
+                    /\(@([^)]+)\)/,  // Extract from (@username)
+                    /^([^(]+?)\s+\(/,  // Extract before first parenthesis
+                    /^([^\s•]+)/  // First word before bullet
+                ];
+                
+                for (const pattern of titlePatterns) {
+                    const match = title.match(pattern);
+                    if (match && match[1] && 
+                        !match[1].includes('Instagram') && 
+                        !match[1].includes('rsrc') &&
+                        match[1].length > 1) {
+                        author = match[1].trim();
+                        console.log('Author from title:', author);
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Clean up the author name
+        if (author) {
+            author = author
+                .replace(/['"]/g, '')
+                .replace(/\s+on\s+Instagram.*$/i, '')
+                .replace(/\s*•.*$/, '')
+                .replace(/\s*\(.*\)$/, '') // Remove parentheses content
+                .trim();
+        }
+        
+        // Final validation - reject obviously wrong values
+        if (!author || 
+            author.includes('rsrc') || 
+            author.includes('.php') || 
+            author.includes('Instagram') ||
+            author.length < 1) {
+            author = 'Unknown';
+        }
+        
+        console.log('Final extracted author:', author);
+        return author;
+        
     } catch (error) {
+        console.error('Error extracting author:', error);
         return 'Unknown';
     }
 };
@@ -587,29 +702,56 @@ const processMediaObject = (media, sourceUrl = '') => {
         // Handle video content (including reels)
         if (media.is_video || isReel || media.video_url) {
             result.type = 'video'; // Force video type for reels
-            result.videoUrl = media.video_url;
+            
+            // Extract video URL with proper cleaning
+            let videoUrl = media.video_url;
+            
+            // If no direct video_url, try video_versions
+            if (!videoUrl && media.video_versions && Array.isArray(media.video_versions)) {
+                // Get the highest quality version or first available
+                const bestVersion = media.video_versions.find(v => v.url && v.width >= 480) || 
+                                  media.video_versions[0];
+                if (bestVersion && bestVersion.url) {
+                    videoUrl = bestVersion.url;
+                }
+            }
+            
+            // Clean the video URL
+            if (videoUrl) {
+                videoUrl = videoUrl
+                    .replace(/\\u0026/g, '&')
+                    .replace(/\\/g, '')
+                    .replace(/^["']|["']$/g, '');
+            }
+            
+            result.videoUrl = videoUrl;
             result.thumbnail = media.display_url || media.thumbnail_url;
             result.duration = media.video_duration || 0;
             result.viewCount = media.video_view_count || media.play_count || 0;
             
-            // Add quality options
+            // Add quality options with clean URLs
             result.qualities = [];
-            if (media.video_url) {
+            if (videoUrl) {
                 result.qualities.push({
                     quality: 'original',
-                    url: media.video_url,
+                    url: videoUrl,
                     width: media.dimensions?.width || 0,
                     height: media.dimensions?.height || 0
                 });
             }
             
-            // Try to find additional video qualities
-            if (media.video_versions) {
+            // Process video_versions for multiple qualities
+            if (media.video_versions && Array.isArray(media.video_versions)) {
                 media.video_versions.forEach(version => {
-                    if (version.url) {
+                    if (version.url && version.url !== videoUrl) {
+                        const cleanUrl = version.url
+                            .replace(/\\u0026/g, '&')
+                            .replace(/\\/g, '')
+                            .replace(/^["']|["']$/g, '');
+                            
                         result.qualities.push({
                             quality: `${version.width}x${version.height}`,
-                            url: version.url,
+                            url: cleanUrl,
                             width: version.width || 0,
                             height: version.height || 0
                         });
