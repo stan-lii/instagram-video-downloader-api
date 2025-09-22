@@ -1,0 +1,75 @@
+{
+  "version": 2,
+  "name": "instagram-video-downloader-api",
+  "builds": [
+    {
+      "src": "api/index.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/health",
+      "dest": "/api/index.js"
+    },
+    {
+      "src": "/api/v1/(.*)",
+      "dest": "/api/index.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/api/index.js"
+    }
+  ],
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 30
+    }
+  },
+  "env": {
+    "NODE_ENV": "production",
+    "CACHE_TTL": "600",
+    "RATE_LIMIT_WINDOW_MS": "900000",
+    "RATE_LIMIT_MAX_REQUESTS": "100",
+    "REQUEST_TIMEOUT": "15000",
+    "RETRY_DELAY": "2000",
+    "MAX_RETRY_ATTEMPTS": "3"
+  },
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, POST, PUT, DELETE, OPTIONS"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "X-Requested-With, Content-Type, Accept, Authorization, Cache-Control"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "s-maxage=300"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/v1/download",
+      "destination": "/api/index.js"
+    },
+    {
+      "source": "/api/v1/download/batch",
+      "destination": "/api/index.js"
+    },
+    {
+      "source": "/api/v1/info",
+      "destination": "/api/index.js"
+    }
+  ]
+}
