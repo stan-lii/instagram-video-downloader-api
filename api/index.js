@@ -109,7 +109,7 @@ const extractReelVideoData = (html, sourceUrl = '') => {
                         type: 'video',
                         videoUrl: videoUrl,
                         thumbnail: extractThumbnailFromHtml(html),
-                        caption: extractCaptionFromHtml(html),
+                        caption: extractCaptionFromHtml(html, sourceUrl),
                         author: extractAuthorFromHtml(html, sourceUrl),
                         extractionMethod: 'reel_detection'
                     };
@@ -147,29 +147,117 @@ const extractThumbnailFromHtml = (html) => {
     }
 };
 
-const extractCaptionFromHtml = (html) => {
+const extractCaptionFromHtml = (html, sourceUrl = '') => {
     try {
         const $ = cheerio.load(html);
-        
-        // Try multiple sources for caption
         let caption = '';
         
-        // Method 1: Look for JSON data with caption
-        const captionPatterns = [
-            /"caption":\s*{[^}]*"text":\s*"([^"]+)"/,
-            /"edge_media_to_caption":\s*{[^}]*"text":\s*"([^"]+)"/,
-            /"text":\s*"([^"]*#[^"]*)"/ // Look for text with hashtags
+        // Method 1: Extract from specific caption span (most reliable for current IG structure)
+        // This targets the actual post caption, not "more posts like this"
+        const captionSpanSelectors = [
+            // Current Instagram caption span classes
+            'span.x193iq5w.xeuugli.x13faqbe.x1vvkbs.xt0psk2.x1i0vuye.xvs91rp.xo1l8bm.x5n08af.x10wh9bi.xpm28yp.x8viiok.x1o7cslx.x126k92a',
+            // Alternative patterns for caption spans
+            'span[style*="line-height"]',
+            'span[dir="auto"]',
+            // More generic fallbacks
+            'article span:contains("#")',
+            'div[data-testid="post-caption"] span'
         ];
         
-        for (const pattern of captionPatterns) {
-            const match = html.match(pattern);
-            if (match && match[1] && match[1].length > 10) {
-                caption = match[1];
-                break;
+        for (const selector of captionSpanSelectors) {
+            try {
+                const captionElements = $(selector);
+                if (captionElements.length > 0) {
+                    // Find the span with the longest text (likely the main caption)
+                    let longestCaption = '';
+                    captionElements.each((i, element) => {
+                        const text = $(element).text().trim();
+                        // Look for captions with hashtags and reasonable length
+                        if (text.includes('#') && text.length > longestCaption.length && text.length > 20) {
+                            // Skip if it looks like a "More posts" caption
+                            if (!text.toLowerCase().includes('more posts') && 
+                                !text.toLowerCase().includes('see more') &&
+                                !text.toLowerCase().includes('related posts')) {
+                                longestCaption = text;
+                            }
+                        }
+                    });
+                    
+                    if (longestCaption) {
+                        caption = longestCaption;
+                        console.log('Found caption from specific span element');
+                        break;
+                    }
+                }
+            } catch (e) {
+                // Continue to next selector
             }
         }
         
-        // Method 2: Extract from meta description if no JSON caption found
+        // Method 2: Targeted JSON extraction with post ID context
+        if (!caption && sourceUrl) {
+            const postId = extractPostId(sourceUrl);
+            if (postId) {
+                // Look for JSON data that specifically relates to this post ID
+                const targetedPatterns = [
+                    new RegExp(`"shortcode":"${postId}"[^}]*"caption":\\s*{[^}]*"text":\\s*"([^"]+)"`, 'i'),
+                    new RegExp(`"${postId}"[^}]*"edge_media_to_caption":\\s*{[^}]*"text":\\s*"([^"]+)"`, 'i'),
+                    new RegExp(`"shortcode_media":[^}]*"shortcode":"${postId}"[^}]*"caption":[^}]*"text":"([^"]+)"`, 'i')
+                ];
+                
+                for (const pattern of targetedPatterns) {
+                    const match = html.match(pattern);
+                    if (match && match[1] && match[1].length > 10) {
+                        caption = match[1];
+                        console.log('Found caption from targeted JSON with post ID');
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Method 3: Look for JSON data with caption (improved patterns)
+        if (!caption) {
+            const captionPatterns = [
+                // More specific patterns that target the main post
+                /"edge_media_to_caption":\s*{\s*"edges":\s*\[\s*{\s*"node":\s*{\s*"text":\s*"([^"]+)"/,
+                /"caption":\s*{\s*"text":\s*"([^"]+)"[^}]*"created_at"/,
+                // Look for captions with edges structure
+                /"edges":\s*\[\s*{\s*"node":\s*{\s*"text":\s*"([^"]*#[^"]*)",
+                // Fallback broader patterns
+                /"caption":\s*{[^}]*"text":\s*"([^"]+)"/,
+                /"text":\s*"([^"]*#[^"]*)"/ // Look for text with hashtags
+            ];
+            
+            for (const pattern of captionPatterns) {
+                const matches = [...html.matchAll(new RegExp(pattern.source, 'g'))];
+                
+                // If we have multiple matches, try to find the best one
+                if (matches.length > 0) {
+                    let bestMatch = '';
+                    
+                    for (const match of matches) {
+                        const candidateText = match[1];
+                        if (candidateText && candidateText.length > 10) {
+                            // Prefer longer captions and those with hashtags
+                            if (candidateText.length > bestMatch.length && 
+                                (candidateText.includes('#') || bestMatch === '')) {
+                                bestMatch = candidateText;
+                            }
+                        }
+                    }
+                    
+                    if (bestMatch) {
+                        caption = bestMatch;
+                        console.log('Found caption from improved JSON patterns');
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Method 4: Extract from meta description if no other method worked
         if (!caption) {
             const metaDesc = $('meta[property="og:description"]').attr('content') ||
                            $('meta[name="description"]').attr('content');
@@ -182,7 +270,25 @@ const extractCaptionFromHtml = (html) => {
                 } else if (metaDesc.includes('#')) {
                     // Extract everything after the first quote that contains hashtags
                     const hashtagPart = metaDesc.split('"').find(part => part.includes('#'));
-                    if (hashtagPart) caption = hashtagPart;
+                    if (hashtagPart && hashtagPart.length > 20) {
+                        caption = hashtagPart;
+                    }
+                }
+                console.log('Found caption from meta description');
+            }
+        }
+        
+        // Method 5: Look for article content as last resort
+        if (!caption) {
+            const articleText = $('article').text();
+            if (articleText && articleText.includes('#')) {
+                // Extract text with hashtags from article
+                const lines = articleText.split('\n').filter(line => 
+                    line.includes('#') && line.length > 20 && line.length < 500
+                );
+                if (lines.length > 0) {
+                    caption = lines[0].trim();
+                    console.log('Found caption from article content');
                 }
             }
         }
@@ -193,11 +299,29 @@ const extractCaptionFromHtml = (html) => {
                 .replace(/\\n/g, '\n')
                 .replace(/\\"/g, '"')
                 .replace(/\\u[\da-f]{4}/gi, '') // Remove unicode escapes
+                .replace(/\\+/g, '') // Remove extra backslashes
+                .replace(/&nbsp;/g, ' ') // Replace non-breaking spaces
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&amp;/g, '&')
                 .trim();
+                
+            // Remove HTML tags if any
+            caption = caption.replace(/<[^>]*>/g, '');
+            
+            // Validate caption quality
+            if (caption.length < 10 || 
+                caption.toLowerCase().includes('more posts') ||
+                caption.toLowerCase().includes('see more like this') ||
+                caption.toLowerCase().includes('related posts')) {
+                caption = '';
+            }
         }
         
+        console.log('Final extracted caption length:', caption.length);
         return caption || '';
     } catch (error) {
+        console.error('Error extracting caption:', error);
         return '';
     }
 };
@@ -409,7 +533,7 @@ const scrapeDirectly = async (url) => {
     }
 };
 
-const extractMediaFromHtml = (html) => {
+const extractMediaFromHtml = (html, sourceUrl = '') => {
     try {
         const $ = cheerio.load(html);
         console.log('HTML content length:', html.length);
@@ -446,7 +570,7 @@ const extractMediaFromHtml = (html) => {
                 try {
                     const sharedData = JSON.parse(sharedDataMatch[1]);
                     console.log('Found window._sharedData');
-                    mediaData = extractFromSharedData(sharedData);
+                    mediaData = extractFromSharedData(sharedData, sourceUrl);
                 } catch (e) {
                     console.error('Error parsing shared data:', e.message);
                 }
@@ -476,8 +600,8 @@ const extractMediaFromHtml = (html) => {
                                     videoUrl: videoUrl,
                                     thumbnail: extractThumbnailFromHtml(html),
                                     title: 'Instagram Reel',
-                                    caption: extractCaptionFromHtml(html),
-                                    author: extractAuthorFromHtml(html)
+                                    caption: extractCaptionFromHtml(html, sourceUrl),
+                                    author: extractAuthorFromHtml(html, sourceUrl)
                                 };
                                 break;
                             }
@@ -505,7 +629,7 @@ const extractMediaFromHtml = (html) => {
                     try {
                         const data = JSON.parse(match[1]);
                         console.log('Found data in pattern match');
-                        mediaData = extractFromAdditionalData(data);
+                        mediaData = extractFromAdditionalData(data, sourceUrl);
                         if (mediaData) break;
                     } catch (e) {
                         console.error('Error parsing pattern data:', e.message);
@@ -522,7 +646,7 @@ const extractMediaFromHtml = (html) => {
                 try {
                     const mediaObj = JSON.parse(match[1]);
                     console.log('Found shortcode_media in JSON');
-                    mediaData = processMediaObject(mediaObj);
+                    mediaData = processMediaObject(mediaObj, sourceUrl);
                     if (mediaData && mediaData.type === 'video') break; // Prefer video results
                 } catch (e) {
                     // Continue searching
@@ -533,7 +657,7 @@ const extractMediaFromHtml = (html) => {
         // Method 6: Enhanced reel video detection
         if (!mediaData || mediaData.type === 'image') {
             console.log('Trying enhanced reel detection...');
-            const reelVideoData = extractReelVideoData(html);
+            const reelVideoData = extractReelVideoData(html, sourceUrl);
             if (reelVideoData) {
                 console.log('Found reel video data');
                 mediaData = reelVideoData;
@@ -560,8 +684,8 @@ const extractMediaFromHtml = (html) => {
                     imageUrl: imageUrl,
                     thumbnail: imageUrl,
                     title: title || 'Instagram Post',
-                    caption: description || '',
-                    author: extractAuthorFromHtml(html) || 'Unknown'
+                    caption: extractCaptionFromHtml(html, sourceUrl) || description || '',
+                    author: extractAuthorFromHtml(html, sourceUrl) || 'Unknown'
                 };
             }
         }
