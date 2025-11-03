@@ -224,7 +224,7 @@ const extractCaptionFromHtml = (html, sourceUrl = '') => {
                 /"edge_media_to_caption":\s*{\s*"edges":\s*\[\s*{\s*"node":\s*{\s*"text":\s*"([^"]+)"/,
                 /"caption":\s*{\s*"text":\s*"([^"]+)"[^}]*"created_at"/,
                 // Look for captions with edges structure
-                /"edges":\s*\[\s*{\s*"node":\s*{\s*"text":\s*"([^"]*#[^"]*)",
+                /"edges":\s*\[\s*{\s*"node":\s*{\s*"text":\s*"([^"]*#[^"]*)",/,
                 // Fallback broader patterns
                 /"caption":\s*{[^}]*"text":\s*"([^"]+)"/,
                 /"text":\s*"([^"]*#[^"]*)"/ // Look for text with hashtags
